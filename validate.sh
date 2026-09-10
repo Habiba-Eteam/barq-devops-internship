@@ -103,20 +103,34 @@ fi
 
 echo
 echo " Load balancing across both backends "
-seen_app01=0
-seen_app02=0
-printf "  progress: "
-for i in $(seq 1 20); do
-    body=$(curl -s --max-time 5 "$BASE_URL/instance")
-    if echo "$body" | grep -q '"instance_id":"app-01"'; then seen_app01=1; fi
-    if echo "$body" | grep -q '"instance_id":"app-02"'; then seen_app02=1; fi
-    printf "."
+lb_attempt=0
+lb_max_attempts=4
+lb_ok=0
+while [ "$lb_attempt" -lt "$lb_max_attempts" ]; do
+    lb_attempt=$((lb_attempt + 1))
+    seen_app01=0
+    seen_app02=0
+    printf "  progress (attempt %s/%s): " "$lb_attempt" "$lb_max_attempts"
+    for i in $(seq 1 20); do
+        body=$(curl -s --max-time 5 "$BASE_URL/instance")
+        if echo "$body" | grep -q '"instance_id":"app-01"'; then seen_app01=1; fi
+        if echo "$body" | grep -q '"instance_id":"app-02"'; then seen_app02=1; fi
+        printf "."
+    done
+    echo " done"
+    if [ "$seen_app01" = "1" ] && [ "$seen_app02" = "1" ]; then
+        lb_ok=1
+        break
+    fi
+    if [ "$lb_attempt" -lt "$lb_max_attempts" ]; then
+        echo "  only saw app-01=$seen_app01 app-02=$seen_app02 -- waiting 6s for nginx's fail_timeout window to clear, then retrying"
+        sleep 6
+    fi
 done
-echo " done"
-if [ "$seen_app01" = "1" ] && [ "$seen_app02" = "1" ]; then
-    pass "both app-01 and app-02 served at least one of 20 requests to /instance"
+if [ "$lb_ok" = "1" ]; then
+    pass "both app-01 and app-02 served at least one of 20 requests to /instance (within $lb_attempt attempt(s))"
 else
-    fail "did not see both backends in 20 requests (app-01 seen=$seen_app01, app-02 seen=$seen_app02)"
+    fail "did not see both backends after $lb_max_attempts attempts (app-01 seen=$seen_app01, app-02 seen=$seen_app02)"
 fi
 
 
