@@ -143,3 +143,13 @@
 - Retest evidence: backup/restore worked after the env var fix; all endpoint tests worked after switching to `127.0.0.1`.
 - Related commit: `81bc43a`
 - Remaining uncertainty: none — host-environment facts, not project bugs.
+
+## Entry 13 — CI showed a backend excluded from load balancing right after startup
+- Symptom: local `validate.sh` runs always passed the load-balancing check (section 3), but the same check failed in GitHub Actions CI: `did not see both backends in 20 requests (app-01 seen=1, app-02 seen=0)`.
+- Hypothesis: CI runners are slower/more loaded than the local dev machine, making a timing-sensitive interaction more likely to trigger there than locally.
+- Command or test: read the CI job's full log output for the failed step.
+- Actual output: confirmed the check ran right after the "wait for readiness" step, which only confirms ONE backend is reachable through nginx (not both individually) before validate.sh runs.
+- Failed attempt: none — the CI log made the timing directly visible without needing further investigation.
+- Root cause: our own Entry 11 fix (`max_fails=2 fail_timeout=5s`) can exclude a backend from nginx's pool for 5 seconds if it has one slow/failed connection attempt during startup — more likely to happen on a loaded CI runner. If `validate.sh`'s 20-request load-balancing burst completes in under 5 seconds (likely, since requests are fast), it can land entirely inside that exclusion window and only ever see the other backend.
+- Fix: made the load-balancing check retry with a bounded backoff (up to 4 attempts, 6s apart — longer than the 5s fail_timeout) instead of failing on the first attempt.
+
