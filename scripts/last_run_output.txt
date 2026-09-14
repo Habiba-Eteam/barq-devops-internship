@@ -1,0 +1,153 @@
+======================================================================
+BARQ log analysis — reproducible run of scripts/analyze_logs.py
+======================================================================
+
+Parse summary 
+access.log:      725 parsed, 1 malformed (excluded) at line(s): [311]
+application.log: 729 parsed, 1 malformed (excluded) at line(s): [401]
+error.log:       67 parsed, 1 unparseable (excluded) at line(s): [68]
+
+--- Duplicate request_ids in access.log (de-duplication) ---
+Raw lines: 725; unique request_ids: 720; duplicated ids: 5
+Duplicated ids: {'lab-000121': 2, 'lab-000241': 2, 'lab-000361': 2, 'lab-000481': 2, 'lab-000601': 2}
+These are byte-identical repeated lines at the same timestamp (e.g. lab-000121 appears twice at 11:05:00.055Z) — a logging/probe artifact, not two real client requests. Deduplicated below by request_id, keeping the first occurrence.
+application.log: raw lines 729, unique request_ids 680; 49 request_ids appear more than once
+  Of those, only 2 are byte-identical duplicate lines (true duplicates, removed).
+  The remaining 47 are a legitimate http_request + dependency_error pair for the same request_id (different events, both kept -- deduping by request_id alone would have silently discarded real dependency_error evidence).
+
+All counts below use the de-duplicated sets: 720 access records, 727 application records.
+
+ access.log status code counts 
+  200: 615
+  404: 10
+  502: 40
+  503: 47
+  504: 8
+
+--- application.log status code counts ---
+  200: 623
+  404: 10
+  503: 47
+  None: 47
+
+ error.log: connect() failed / Connection refused events 
+Total: 67
+First occurrence: 2026-08-20T11:05:02+00:00
+Last occurrence:  2026-08-20T11:26:47+00:00
+Outage window duration: 1305s
+Affected upstream(s): {'172.23.0.12:8080': 63, '172.23.0.11:8080': 4}
+Paths affected during outage: {'/health': 10, '/ready': 10, '/records': 18, '/counter': 10, '/instance': 9, '/': 10}
+
+ access.log: non-2xx responses by 5-minute bucket (timeline) 
+  2026-08-20T11:00:00+00:00  ## (2)
+  2026-08-20T11:05:00+00:00  ########################################## (42)
+  2026-08-20T11:10:00+00:00  ######################## (24)
+  2026-08-20T11:15:00+00:00  ########## (10)
+  2026-08-20T11:20:00+00:00  ################# (17)
+  2026-08-20T11:25:00+00:00  ########## (10)
+
+ error.log: connect() failures by 5-minute bucket (timeline) 
+  2026-08-20T11:05:00+00:00  ########################################################### (59)
+  2026-08-20T11:25:00+00:00  ######## (8)
+
+application.log: instance_id distribution DURING outage window 
+  {'app-01': 302, 'app-02': 226}
+  (app-02 largely silent here => app-02 was the unreachable instance; confirmed by error.log upstream field)
+
+ application.log: instance_id distribution OUTSIDE outage window 
+  {'app-01': 100, 'app-02': 99}
+
+ Correlation sample: access.log 503s cross-checked against application.log 
+access.log 503 count: 47; matched to an application.log record: 47
+(503s with no matching application.log record indicate nginx returned the
+ error itself, e.g. connect() refused, before the app ever saw the request)
+
+application.log: dependency_error breakdown (2nd incident) 
+  Total: 47
+  By dependency: {'redis': 31, 'postgres': 16}
+  By error_type: {'TimeoutError': 31, 'InvalidPassword': 16}
+  Window: 2026-08-20T11:12:09.524000+00:00 to 2026-08-20T11:21:45.040000+00:00
+  (This is a SEPARATE incident from the app-02 connect-refused outage
+   above -- it overlaps in time but has a different root cause: redis
+   TimeoutError and postgres InvalidPassword, matching the config/app.env
+   port/password mismatch this project's baseline shipped with.)
+
+=== Q1: UTC interval covered + per-file line counts ===
+  Interval: 2026-08-20T11:00:00.015000+00:00 to 2026-08-20T11:29:57.578000+00:00
+  access.log:      raw=725 valid=724 malformed=1 exact-duplicate=4
+    -> valid parsed: 724, of which 4 are exact-duplicate lines (removed), 720 unique
+  application.log: raw=729 valid=728 malformed=1, of which 2 exact-duplicate lines removed, 727 unique kept (includes legitimate multi-event request_ids)
+  error.log:       raw lines=68 valid=67 unparseable=1
+
+ Q2: distinct client requests 
+  Distinct client requests (access.log, post-dedup): 720
+  Dedup method: exact byte-identical lines removed (see Q1). Retries are NOT
+  double-counted because nginx writes ONE access.log line per client request
+  even when it retries against a second upstream -- see Q6 for the
+  comma-separated upstream/upstream_status evidence of this.
+
+=== Q3: final client status counts + error rate ===
+  Denominator: 720 (distinct client requests in access.log, post-dedup)
+    200: 615 (85.4%)
+    404: 10 (1.4%)
+    502: 40 (5.6%)
+    503: 47 (6.5%)
+    504: 8 (1.1%)
+  Server error rate (5xx only): 95/720 = 13.19%
+  All non-2xx rate (4xx+5xx): 105/720 = 14.58%
+
+ Q4: failures by path, time window, backend 
+  By path: {'/health': 10, '/records': 26, '/counter': 26, '/': 10, '/ready': 23}
+  By first-attempted backend: {'172.23.0.12:8080': 68, '172.23.0.11:8080': 27}
+  Time windows: see the two timeline sections above (11:05-11:26 connect-refused,
+  11:12-11:21 dependency errors) -- failures cluster in exactly those windows.
+
+ Q5: median / p95 client latency (access.log request_time, seconds) 
+  n=720; method=linear interpolation between closest ranks (numpy-style)
+  median (p50): 54.0 ms
+  p95: 2001.0 ms
+  (units: request_time is in seconds per logs/README.md; converted to ms here)
+
+ Q6: upstream retries 
+  Requests with multiple upstream attempts (comma-separated upstream field): 19
+  Succeeded after retry (final status 200): 19
+  Still failed after retry: 0
+  Example: request_id=lab-000124 upstream='172.23.0.12:8080, 172.23.0.11:8080' upstream_status='502, 200' final_status=200
+
+ Q7: incident timeline (access + error + application logs) 
+  error.log connect-refused events (proxy/connectivity, Incident A):
+    first=2026-08-20T11:05:02+00:00 last=2026-08-20T11:26:47+00:00 total=67
+    by 5-min bucket: {datetime.datetime(2026, 8, 20, 11, 5, tzinfo=datetime.timezone.utc): 59, datetime.datetime(2026, 8, 20, 11, 25, tzinfo=datetime.timezone.utc): 8}
+  application.log dependency_error events (dependency layer, Incident B):
+    first=2026-08-20T11:12:09.524000+00:00 last=2026-08-20T11:21:45.040000+00:00 total=47
+  access.log non-2xx responses by 5-min bucket (combined effect of both incidents):
+    {datetime.datetime(2026, 8, 20, 11, 0, tzinfo=datetime.timezone.utc): 2, datetime.datetime(2026, 8, 20, 11, 5, tzinfo=datetime.timezone.utc): 42, datetime.datetime(2026, 8, 20, 11, 10, tzinfo=datetime.timezone.utc): 24, datetime.datetime(2026, 8, 20, 11, 15, tzinfo=datetime.timezone.utc): 10, datetime.datetime(2026, 8, 20, 11, 20, tzinfo=datetime.timezone.utc): 17, datetime.datetime(2026, 8, 20, 11, 25, tzinfo=datetime.timezone.utc): 10}
+  Interpretation: Incident A (connectivity) runs 2026-08-20T11:05:02+00:00 to
+  2026-08-20T11:26:47+00:00, with a gap in the middle. Incident B (dependency) runs
+  fully nested inside that window, 2026-08-20T11:12:09.524000+00:00 to 2026-08-20T11:21:45.040000+00:00, hitting both app instances rather than just one.
+
+ Q8: correlated failed + successful request examples 
+  FAILED example: request_id=lab-000122
+    access.log:      {'timestamp': '2026-08-20T11:05:02.503Z', 'request_id': 'lab-000122', 'method': 'GET', 'path': '/health', 'status': 502, 'upstream': '172.23.0.12:8080', 'upstream_status': '502', 'request_time': 0.003, 'client': '192.0.2.24'}
+    application.log: NO MATCHING ENTRY -- nginx failed before the app ever saw this request
+  SUCCESSFUL example: request_id=lab-000006
+    access.log:      {'timestamp': '2026-08-20T11:00:12.520Z', 'request_id': 'lab-000006', 'method': 'GET', 'path': '/records', 'status': 200, 'upstream': '172.23.0.12:8080', 'upstream_status': '200', 'request_time': 0.02, 'client': '192.0.2.24'}
+    application.log: {'timestamp': '2026-08-20T11:00:12.520Z', 'level': 'INFO', 'event': 'http_request', 'request_id': 'lab-000006', 'instance_id': 'app-02', 'method': 'GET', 'path': '/records', 'status': 200, 'duration_ms': 20.0}
+
+ Q9: proxy/connectivity vs dependency/application issues
+  Proxy/connectivity issues: 67 error.log 'connect() failed (111: Connection refused)' events, all pointing at upstream IPs -- these
+  happen BEFORE the app ever sees the request (nginx can't even open a TCP
+  connection to the backend). Proof: they exist only in error.log, logged by
+  nginx itself, naming an unreachable upstream IP:port.
+  Dependency/application issues: 47 application.log
+  'dependency_error' events (redis TimeoutError, postgres InvalidPassword) --
+  these happen AFTER the app received the request and tried to use a
+  dependency. Proof: logged by the app itself (service=barq-api) with a
+  specific dependency name and error_type, at a request_id nginx also logged
+  with a normal (non-connect-refused) proxy flow.
+
+--- application.log duration_ms stats ---
+  count=680 mean=176.6 median=57.0 max=2700.0 min=15.0
+
+Done. This output is the evidence base for log_analysis.md — do not
+hand-count or restate different numbers there than what this script produces.
