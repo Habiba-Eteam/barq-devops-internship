@@ -77,11 +77,17 @@ services:
     container_name: app-03
     environment:
       <<: *app-env
-      INSTANCE_ID: "app-03"    
+      INSTANCE_ID: "app-03"  
   nginx:
     image: nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
     container_name: nginx
     restart: on-failure:5
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:81/"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 3s
     deploy:
       resources:
          limits:
