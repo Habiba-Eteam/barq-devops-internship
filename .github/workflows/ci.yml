@@ -32,7 +32,7 @@ jobs:
       - name: Wait for readiness (bounded wait)
         run: |
           for i in $(seq 1 60); do
-            if curl -sf --max-time 5 http://127.0.0.1:8080/ready | grep -q '"status":"ready"'; then
+            if curl -sf --max-time 5 http://127.0.0.1:8090/ready | grep -q '"status":"ready"'; then
               echo "Service is ready after ${i}s"
               exit 0
             fi
@@ -45,12 +45,12 @@ jobs:
       - name: Run validate.sh
         run: |
           chmod +x validate.sh
-          ./validate.sh
+          BASE_URL=http://127.0.0.1:8090 ./validate.sh
 
       - name: Run failure_test.sh
         run: |
           chmod +x failure_test.sh
-          ./failure_test.sh
+          BASE_URL=http://127.0.0.1:8090 ./failure_test.sh
 
       - name: Show container logs on failure
         if: failure()
