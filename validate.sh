@@ -206,8 +206,9 @@ for c in app-01 app-02 postgres redis; do
     fi
 done
 
+expected_port=$(echo "$BASE_URL" | sed -E 's#.*:([0-9]+).*#\1#')
 nginx_ports=$(docker port nginx 2>/dev/null)
-if echo "$nginx_ports" | grep -q "8080\|${PUBLIC_PORT:-8080}"; then
+if echo "$nginx_ports" | grep -q "$expected_port"; then
     pass "nginx publishes exactly the expected public port"
 else
     fail "nginx port publication looks wrong: $nginx_ports"
