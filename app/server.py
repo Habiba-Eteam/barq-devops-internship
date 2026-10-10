@@ -97,9 +97,9 @@ def create_app(config=None, dependencies=None):
     def health():
         return response({"status": "alive"})
 
-    @app.get("/instance")
+    @app.get("/about")
     def identity():
-        return response({"status": "ok"})
+        return response({"status": "ok", "deployed_by": "github-actions"})
 
     @app.get("/ready")
     def ready():
